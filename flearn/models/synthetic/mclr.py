@@ -1,5 +1,8 @@
 import numpy as np
 import tensorflow as tf
+from tqdm import trange
+# 禁用TensorFlow 2.x行为，确保兼容性
+tf.compat.v1.disable_v2_behavior()
 
 from flearn.utils.model_utils import batch_data, batch_data_multiple_iters
 from flearn.utils.tf_utils import graph_size
@@ -19,7 +22,7 @@ class Model(object):
         # create computation graph        
         self.graph = tf.Graph()
         with self.graph.as_default():
-            tf.random.set_seed(123+seed)
+            tf.compat.v1.set_random_seed(123+seed)  # 使用v1版本的set_random_seed
             self.features, self.labels, self.train_op, self.grads, self.eval_metric_ops, self.loss, self.pred = self.create_model(optimizer)
             self.saver = tf.compat.v1.train.Saver()
         self.sess = tf.compat.v1.Session(graph=self.graph)
@@ -36,16 +39,26 @@ class Model(object):
         """Model function for Logistic Regression."""
         features = tf.compat.v1.placeholder(tf.float32, shape=[None, 60], name='features')
         labels = tf.compat.v1.placeholder(tf.int64, shape=[None,], name='labels')
-        logits = tf.compat.v1.keras.layers.Dense(units=self.num_classes, kernel_regularizer=tf.compat.v1.keras.regularizers.l2(0.001))(features)
+        
+        # 创建Dense层并应用到features
+        dense_layer = tf.compat.v1.keras.layers.Dense(
+            units=self.num_classes, 
+            kernel_regularizer=tf.compat.v1.keras.regularizers.l2(0.001)
+        )
+        logits = dense_layer(features)
+        
         predictions = {
             "classes": tf.argmax(input=logits, axis=1),
             "probabilities": tf.nn.softmax(logits, name="softmax_tensor")
-            }
+        }
         loss = tf.compat.v1.losses.sparse_softmax_cross_entropy(labels=labels, logits=logits)
 
+        # 创建全局步骤变量
+        global_step = tf.compat.v1.train.get_or_create_global_step()
+        
         grads_and_vars = optimizer.compute_gradients(loss)
         grads, _ = zip(*grads_and_vars)
-        train_op = optimizer.apply_gradients(grads_and_vars, global_step=tf.compat.v1.train.get_global_step())
+        train_op = optimizer.apply_gradients(grads_and_vars, global_step=global_step)
         eval_metric_ops = tf.math.count_nonzero(tf.equal(labels, predictions["classes"]))
         return features, labels, train_op, grads, eval_metric_ops, loss, predictions["classes"]
 
@@ -62,7 +75,6 @@ class Model(object):
         return model_params
 
     def get_gradients(self, data, model_len):
-
         grads = np.zeros(model_len)
         num_samples = len(data['y'])
 
@@ -76,7 +88,7 @@ class Model(object):
     def solve_inner(self, data, num_epochs=1, batch_size=32):
         '''Solves local optimization problem'''
 
-        for _ in range(num_epochs):
+        for _ in trange(num_epochs):
             for X, y in batch_data(data, batch_size):
                 with self.graph.as_default():
                     self.sess.run(self.train_op, feed_dict={self.features: X, self.labels: y})
@@ -100,10 +112,9 @@ class Model(object):
             data: dict of the form {'x': [list], 'y': [list]}
         '''
         with self.graph.as_default():
-            tot_correct, loss, pred = self.sess.run([self.eval_metric_ops, self.loss, self.pred], 
+            tot_correct, loss = self.sess.run([self.eval_metric_ops, self.loss], 
                 feed_dict={self.features: data['x'], self.labels: data['y']})
         return tot_correct, loss
     
     def close(self):
         self.sess.close()
-        
